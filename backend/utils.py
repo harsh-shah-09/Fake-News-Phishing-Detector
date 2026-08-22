@@ -27,6 +27,7 @@ def load_model(filename):
         return None
 
 fake_news_model = load_model('fake_news_model.pkl')
+vectorizer = load_model('vectorizer.pkl')
 phishing_model = load_model('phishing_model.pkl')
 phishing_vectorizer = load_model('phishing_vectorizer.pkl')
 
