@@ -27,8 +27,8 @@ def load_model(filename):
         return None
 
 fake_news_model = load_model('fake_news_model.pkl')
-vectorizer = load_model('vectorizer.pkl')
 phishing_model = load_model('phishing_model.pkl')
+phishing_vectorizer = load_model('phishing_vectorizer.pkl')
 
 def clean_text(text):
     """Must match the training cleaner exactly."""
@@ -61,22 +61,14 @@ def predict_news(text):
         return {"prediction": "Processing Error", "confidence": 0}
 
 def predict_phishing(url):
-    if not phishing_model:
+    if not phishing_model or not phishing_vectorizer:
         return {"prediction": "Model Not Trained", "confidence": 0}
-   
     try:
-        # 1. Uses a relative dynamic path (Works on Windows, Mac, and Linux/Render)
-        ml_path = os.path.abspath(os.path.join(BASE_DIR, '../ml'))
+        # Transform the incoming URL using Lexical Analysis
+        vectorized_url = phishing_vectorizer.transform([url])
         
-        if ml_path not in sys.path:
-            sys.path.append(ml_path)
-            
-        # 2. Tells VS Code's Pylance to ignore the static warning here
-        from feature_extractor import extract_url_features  # type: ignore
-        
-        features = extract_url_features(url)
-        prediction_value = phishing_model.predict([features])[0]
-        probabilities = phishing_model.predict_proba([features])[0]
+        prediction_value = phishing_model.predict(vectorized_url)[0]
+        probabilities = phishing_model.predict_proba(vectorized_url)[0]
         confidence = round(max(probabilities) * 100, 2)
         
         result = "Phishing" if prediction_value == 1 else "Safe"

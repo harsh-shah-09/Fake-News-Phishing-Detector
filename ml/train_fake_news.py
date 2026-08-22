@@ -65,6 +65,12 @@ def load_and_prepare_data():
     fake_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\Fake.csv')
     true_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\True.csv')
     
+    try:
+        local_true_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\local_real_news.csv')
+        true_df = pd.concat([true_df, local_true_df], axis=0)
+    except FileNotFoundError:
+        pass
+    
     # Add a target label column. 0 = Fake, 1 = Real
     fake_df['label'] = 0
     true_df['label'] = 1

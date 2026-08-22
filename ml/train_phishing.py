@@ -1,84 +1,55 @@
 import pandas as pd
-import numpy as np
 import pickle
+import os
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from feature_extractor import extract_url_features
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
 
-# ==========================================
-# 1. Dataset Loading & Processing
-# ==========================================
 def load_and_prepare_data():
     print("[INFO] Loading Phishing Dataset...")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATASET_PATH = os.path.join(BASE_DIR, r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\phishing_site_urls.csv')
+    
     try:
-        # CRITICAL FIX: Read the whole file first, THEN shuffle and take 50,000.
-        # This guarantees a perfectly mixed balance of Safe and Phishing links.
-        df = pd.read_csv('../datasets/phishing_site_urls.csv')
-        df = df.sample(n=50000, random_state=42).reset_index(drop=True)
+        df = pd.read_csv(DATASET_PATH)
+        # Logistic Regression is highly efficient, so 150k rows is perfect!
+        df = df.sample(n=150000, random_state=42).reset_index(drop=True)
     except FileNotFoundError:
-        print("[ERROR] Dataset not found!")
+        print(f"[ERROR] Dataset not found at: {DATASET_PATH}")
         return None, None
         
-    print("[INFO] Mapping text labels to binary numbers (good->0, bad->1)...")
     df['Label'] = df['Label'].map({'good': 0, 'bad': 1})
-    
-    print("[INFO] Extracting URL structural features (This will take a few minutes)...")
-    extracted_features = df['URL'].apply(extract_url_features)
-    
-    X = pd.DataFrame(extracted_features.tolist(), columns=[
-        'Has_IP', 'URL_Length', 'Is_Shortened', 'Has_At_Symbol', 
-        'Has_Double_Slash', 'Has_Hyphen', 'Domain_Dots', 'HTTPS_in_Domain'
-    ])
-    Y = df['Label']
-    return X, Y
+    return df['URL'], df['Label']
 
-# ==========================================
-# 2. Model Training Pipeline
-# ==========================================
 def train_model():
-    X, Y = load_and_prepare_data()
-    if X is None:
-        return
-        
+    X_raw, Y = load_and_prepare_data()
+    if X_raw is None: return
+    
+    print("[INFO] Vectorizing URLs (Character-Level TF-IDF)...")
+    # Analyzes sub-word character chunks (e.g., catching "paypa1")
+    vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 5), max_features=5000)
+    X = vectorizer.fit_transform(X_raw)
+    
     print("[INFO] Splitting dataset into Training and Testing sets...")
     X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
     
-    print("[INFO] Training Random Forest Classifier (Building 100 Decision Trees)...")
-    # n_estimators=100 means we build a forest of 100 trees
-    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+    print("[INFO] Training Logistic Regression Model...")
+    model = LogisticRegression(max_iter=1000, class_weight='balanced', n_jobs=-1)
     model.fit(X_train, Y_train)
     
-    # ==========================================
-    # 3. Model Evaluation
-    # ==========================================
     print("\n[INFO] Evaluating Model Performance:")
     predictions = model.predict(X_test)
+    print(f"Accuracy: {accuracy_score(Y_test, predictions):.2%}")
+    print("\nClassification Report:\n", classification_report(Y_test, predictions))
     
-    acc = accuracy_score(Y_test, predictions)
-    print(f"Accuracy: {acc * 100:.2f}%\n")
-    
-    print("Classification Report:")
-    # Generates precision, recall, and f1-score automatically
-    print(classification_report(Y_test, predictions))
-    
-    print("Confusion Matrix:")
-    print(confusion_matrix(Y_test, predictions))
-    
-    # Print Feature Importance (Shows which structural flaw the AI relies on most)
-    print("\n[INFO] Feature Importances (What the AI learned matters most):")
-    importances = model.feature_importances_
-    for feature, importance in zip(X.columns, importances):
-        print(f"{feature}: {importance * 100:.2f}%")
-        
-    # ==========================================
-    # 4. Saving the Binary Artifact
-    # ==========================================
-    print("\n[INFO] Saving Phishing Model to disk...")
-    with open('../models/phishing_model.pkl', 'wb') as f:
+    print("[INFO] Saving Model and Vectorizer to disk...")
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(BASE_DIR, '../models/phishing_model.pkl'), 'wb') as f:
         pickle.dump(model, f)
-        
+    with open(os.path.join(BASE_DIR, '../models/phishing_vectorizer.pkl'), 'wb') as f:
+        pickle.dump(vectorizer, f)
     print("[SUCCESS] Phishing model training complete and saved.")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     train_model()
