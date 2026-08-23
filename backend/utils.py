@@ -8,6 +8,28 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import numpy as np
 from scipy.sparse import hstack, csr_matrix
+from urllib.parse import urlparse
+
+# List of universally verified top-level authoritative root domains
+TRUSTED_ROOT_DOMAINS = {
+    'google.com', 'google.co.in', 'youtube.com', 'github.com',
+    'microsoft.com', 'apple.com', 'amazon.com', 'linkedin.com',
+    'wikipedia.org', 'cloudflare.com', 'mozilla.org'
+}
+def is_trusted_domain(url):
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower().split(':')[0]
+        
+        # Check direct domain match or parent root domain match
+        for trusted in TRUSTED_ROOT_DOMAINS:
+            if netloc == trusted or netloc.endswith('.' + trusted):
+                return True
+        return False
+    except Exception:
+        return False
 
 # Initialize NLTK safely for the server
 nltk.download('stopwords', quiet=True)
@@ -91,13 +113,19 @@ def predict_phishing(url):
     if not phishing_model or not phishing_vectorizer:
         return {"prediction": "Model Not Trained", "confidence": 0}
     try:
-        # Transform the incoming URL using Lexical Analysis
+        # Step 1: Check Domain Authority Guardrail
+        if is_trusted_domain(url):
+            return {
+                "prediction": "Safe",
+                "confidence": 98.50
+            }
+
+        # Step 2: Machine Learning Lexical Evaluation
         vectorized_url = phishing_vectorizer.transform([url])
-        
         prediction_value = phishing_model.predict(vectorized_url)[0]
         probabilities = phishing_model.predict_proba(vectorized_url)[0]
         confidence = round(max(probabilities) * 100, 2)
-        
+
         result = "Phishing" if prediction_value == 1 else "Safe"
         return {"prediction": result, "confidence": confidence}
     except Exception as e:
