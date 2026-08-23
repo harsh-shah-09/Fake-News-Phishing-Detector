@@ -9,25 +9,52 @@ from nltk.stem import WordNetLemmatizer
 import numpy as np
 from scipy.sparse import hstack, csr_matrix
 from urllib.parse import urlparse
+from tranco import Tranco
 
-# List of universally verified top-level authoritative root domains
-TRUSTED_ROOT_DOMAINS = {
-    'google.com', 'google.co.in', 'youtube.com', 'github.com',
-    'microsoft.com', 'apple.com', 'amazon.com', 'linkedin.com',
-    'wikipedia.org', 'cloudflare.com', 'mozilla.org'
-}
+
+print("[INFO] Booting Domain Authority Guardrail...")
+try:
+    # This automatically downloads and caches the Top 1 Million list on startup
+    t = Tranco(cache=True, cache_dir='.tranco')
+    tranco_list = t.list()
+    TRANCO_AVAILABLE = True
+    print(f"[SUCCESS] Tranco Top 1 Million loaded. List ID: {tranco_list.list_id}")
+except Exception as e:
+    print("[WARNING] Tranco API failed. Falling back to emergency whitelist.")
+    TRANCO_AVAILABLE = False
+    EMERGENCY_WHITELIST = {'google.com', 'google.co.in', 'youtube.com', 'github.com','microsoft.com', 'apple.com', 'amazon.com', 'linkedin.com','wikipedia.org', 'cloudflare.com', 'mozilla.org','indianexpress.com', 'thehindu.com', 'timesofindia.indiatimes.com','ndtv.com', 'bbc.com', 'bbc.co.uk', 'cnn.com', 'reuters.com','nytimes.com', 'wsj.com', 'aljazeera.com', 'bloomberg.com','twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'whatsapp.com', 'telegram.org', 'reddit.com', 'quora.com', 'medium.com', 'stackexchange.com', 'stackoverflow.com','w3schools.com', 'geeksforgeeks.org', 'coursera.org', 'edx.org', 'khanacademy.org', 'udemy.com', 'pluralsight.com','linkedin.com', 'indeed.com', 'glassdoor.com', 'monster.com', 'naukri.com', 'timesjobs.com', 'shine.com', 'freshersworld.com', 'hackernews.com', 'dev.to', 'hashnode.com',}
+
+
 def is_trusted_domain(url):
+    """
+    Extracts the root domain and dynamically queries the Tranco Top 1M list.
+    """
     try:
         if not url.startswith(('http://', 'https://')):
             url = 'https://' + url
         parsed = urlparse(url)
         netloc = parsed.netloc.lower().split(':')[0]
         
-        # Check direct domain match or parent root domain match
-        for trusted in TRUSTED_ROOT_DOMAINS:
-            if netloc == trusted or netloc.endswith('.' + trusted):
-                return True
-        return False
+        # Create variations to handle subdomains (gemini.google.com -> google.com)
+        parts = netloc.split('.')
+        domains_to_check = [netloc]
+        if len(parts) >= 2:
+            domains_to_check.append(f"{parts[-2]}.{parts[-1]}") # Root (google.com)
+        if len(parts) >= 3:
+            domains_to_check.append(f"{parts[-3]}.{parts[-2]}.{parts[-1]}") # Country code (google.co.in)
+        
+        # 1. Query the Global API List
+        if TRANCO_AVAILABLE:
+            for d in domains_to_check:
+                # If rank() returns anything other than -1, the domain is in the Top 1M
+                if tranco_list.rank(d) != -1:
+                    return True
+            return False
+            
+        # 2. Emergency Fallback
+        else:
+            return any(d in EMERGENCY_WHITELIST for d in domains_to_check)
+            
     except Exception:
         return False
 
