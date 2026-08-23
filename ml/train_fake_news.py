@@ -71,8 +71,18 @@ def load_and_prepare_data():
     except FileNotFoundError:
         pass
     
+    # ==========================================
+    # Clean Data Leakage
+    # ==========================================
+    print("[INFO] Cleaning Data Leakage (Removing publisher datelines)...")
+    
+    # This regex looks for the "CITY (Publisher) - " pattern and deletes it
+    # so the AI actually has to learn the language of the news, not the publisher name.
+    true_df['text'] = true_df['text'].str.replace(r'^.*?\(Reuters\)\s*-\s*', '', regex=True)
+    true_df['text'] = true_df['text'].str.replace(r'^.*?\s*-\s*', '', regex=True)
+    
     # Add a target label column. 0 = Fake, 1 = Real
-    fake_df['label'] = 0
+    fake_df['label'] = 0    
     true_df['label'] = 1
     
     # Combine the two datasets into one large dataset
