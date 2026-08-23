@@ -1,175 +1,140 @@
-import pandas as pd
-import numpy as np
+import os
+import pickle
 import re
 import string
-import pickle
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+import numpy as np
+import pandas as pd
+from scipy.sparse import hstack, csr_matrix
+
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.pipeline import FeatureUnion
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix, roc_curve
+from sklearn.svm import LinearSVC
+from sklearn.ensemble import ExtraTreesClassifier, StackingClassifier
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import accuracy_score, classification_report
 
-# ==========================================
-# 1. NLTK Downloads & Initialization
-# ==========================================
-# We must download the English dictionaries required for text cleaning
-nltk.download('stopwords')
-nltk.download('wordnet')
+import nltk
+from nltk.corpus import stopwords
 
-# Initialize the lemmatizer
-lemmatizer = WordNetLemmatizer()
-# Load English stop words (e.g., 'the', 'is', 'in')
+nltk.download('stopwords', quiet=True)
 stop_words = set(stopwords.words('english'))
 
-# ==========================================
-# 2. Text Preprocessing Function
-# ==========================================
+def extract_stylometric_features(raw_texts):
+    """
+    Extracts forensic linguistic signatures:
+    1. Capital letter ratio (screaming / sensationalism)
+    2. Exclamation mark density
+    3. Question mark density
+    4. Punctuation density
+    5. Average word length
+    6. Lexical diversity (unique words / total words)
+    """
+    features = []
+    for text in raw_texts:
+        text_str = str(text)
+        total_chars = max(len(text_str), 1)
+        words = text_str.split()
+        total_words = max(len(words), 1)
+        
+        cap_count = sum(1 for c in text_str if c.isupper())
+        excl_count = text_str.count('!')
+        ques_count = text_str.count('?')
+        punct_count = sum(1 for c in text_str if c in string.punctuation)
+        avg_word_len = sum(len(w) for w in words) / total_words
+        lexical_diversity = len(set(words)) / total_words
+        
+        features.append([
+            cap_count / total_chars,
+            excl_count / total_words,
+            ques_count / total_words,
+            punct_count / total_chars,
+            avg_word_len,
+            lexical_diversity
+        ])
+    return np.array(features)
+
 def clean_text(text):
-    """
-    Cleans raw text data to improve AI training accuracy.
-    """
-    # 1. Lowercase: Make all text lowercase so "Apple" and "apple" are treated the same
-    text = text.lower()
-    
-    # 2. Remove URLs, HTML tags, and weird brackets using Regular Expressions (Regex)
-    # ADDED 'r' BEFORE STRINGS HERE
+    text = str(text).lower()
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     text = re.sub(r'<.*?>+', '', text)
-    
-    # 3. Remove Punctuation (commas, periods, exclamation marks)
     text = re.sub(r'[%s]' % re.escape(string.punctuation), '', text)
-    
-    # 4. Remove newline characters and numbers
     text = re.sub(r'\n', ' ', text)
     text = re.sub(r'\w*\d\w*', '', text)
-    
-    # 5. Tokenization & Stopword Removal & Lemmatization
-    # Split text into single words (tokens)
-    words = text.split()
-    # Keep the word only if it's not a useless stopword, and convert it to its root form (e.g., "running" -> "run")
-    cleaned_words = [lemmatizer.lemmatize(word) for word in words if word not in stop_words]
-    
-    # Join the cleaned words back into a single string
-    return ' '.join(cleaned_words)
+    words = [w for w in text.split() if w not in stop_words]
+    return ' '.join(words)
 
-# ==========================================
-# 3. Loading and Preparing the Dataset
-# ==========================================
 def load_and_prepare_data():
-    print("[INFO] Loading datasets from CSV files...")
-    # Load the CSV files into Pandas DataFrames
-    # ADDED 'r' BEFORE FILE PATHS HERE
-    fake_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\Fake.csv')
-    true_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\True.csv')
-    
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    fake_df = pd.read_csv(os.path.join(base_dir, r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\Fake.csv'))
+    true_df = pd.read_csv(os.path.join(base_dir, r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\True.csv'))
+
+    # Neutralize publisher dateline leakage
+    true_df['text'] = true_df['text'].str.replace(r'^.*?\(reuters\)\s*-\s*', '', regex=True, case=False)
+    true_df['text'] = true_df['text'].str.replace(r'^.*?\s*-\s*', '', regex=True)
+
     try:
-        local_true_df = pd.read_csv(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\local_real_news.csv')
-        true_df = pd.concat([true_df, local_true_df], axis=0)
+        local_df = pd.read_csv(os.path.join(base_dir, r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\datasets\..0local_real_news.csv'))
+        true_df = pd.concat([true_df, local_df], axis=0)
     except FileNotFoundError:
         pass
-    
-    # ==========================================
-    # Clean Data Leakage
-    # ==========================================
-    print("[INFO] Cleaning Data Leakage (Removing publisher datelines)...")
-    
-    # This regex looks for the "CITY (Publisher) - " pattern and deletes it
-    # so the AI actually has to learn the language of the news, not the publisher name.
-    true_df['text'] = true_df['text'].str.replace(r'^.*?\(Reuters\)\s*-\s*', '', regex=True)
-    true_df['text'] = true_df['text'].str.replace(r'^.*?\s*-\s*', '', regex=True)
-    
-    # Add a target label column. 0 = Fake, 1 = Real
-    fake_df['label'] = 0    
+
+    fake_df['label'] = 0
     true_df['label'] = 1
-    
-    # Combine the two datasets into one large dataset
-    df = pd.concat([fake_df, true_df], axis=0)
-    
-    # Shuffle the dataset so Real and Fake are mixed randomly
-    df = df.sample(frac=1).reset_index(drop=True)
-    
-    # Combine Title and Text into a single column for maximum context
-    df['content'] = df['title'] + " " + df['text']
-    
-    # Keep only the columns we need to save memory
-    df = df[['content', 'label']]
-    
-    print("[INFO] Cleaning text data (This may take a few minutes)...")
-    # Apply our clean_text function to every row in the dataset
-    df['content'] = df['content'].apply(clean_text)
-    
-    return df
 
-# ==========================================
-# 4. Training the Machine Learning Model
-# ==========================================
+    df = pd.concat([fake_df, true_df], axis=0).sample(frac=1, random_state=42).reset_index(drop=True)
+    df['raw_content'] = df['title'].fillna('') + ' ' + df['text'].fillna('')
+    df['clean_content'] = df['raw_content'].apply(clean_text)
+    
+    return df['raw_content'], df['clean_content'], df['label']
+
 def train_model():
-    # 1. Get the cleaned data
-    df = load_and_prepare_data()
-    
-    # Separate the features (X) and the target labels (Y)
-    X = df['content']
-    Y = df['label']
-    
-    # 2. Train / Test Split
-    # Split data: 80% for training the AI, 20% for testing it on unseen data
-    X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
-    
-    print("[INFO] Vectorizing text using TF-IDF...")
-    # 3. TF-IDF Vectorization
-    # max_features=5000 means we only care about the top 5000 most important words to save memory
-    vectorizer = TfidfVectorizer(max_features=5000)
-    
-    # Learn the vocabulary from the training set and transform the text into numbers
-    X_train_vectorized = vectorizer.fit_transform(X_train)
-    # Transform the test set using the ALREADY LEARNED vocabulary
-    X_test_vectorized = vectorizer.transform(X_test)
-    
-    print("[INFO] Training Logistic Regression Model...")
-    # 4. Initialize and train the Logistic Regression classifier
-    model = LogisticRegression(max_iter=1000)
-    # The .fit() command is where the actual math and learning happens
-    model.fit(X_train_vectorized, Y_train)
-    
-# ==========================================
-# 5. Evaluating the Model
-# ==========================================
-    print("\n[INFO] Evaluating Model Performance on Test Data:")
-    
-    # Ask the model to predict the answers for the 20% test data
-    predictions = model.predict(X_test_vectorized)
-    
-    # Calculate metrics
-    acc = accuracy_score(Y_test, predictions)
-    prec = precision_score(Y_test, predictions)
-    rec = recall_score(Y_test, predictions)
-    conf_matrix = confusion_matrix(Y_test, predictions)
-    
-    print(f"Accuracy:  {acc * 100:.2f}% (Overall correctness)")
-    print(f"Precision: {prec * 100:.2f}% (When it predicts Real, how often is it right?)")
-    print(f"Recall:    {rec * 100:.2f}% (Out of all Real articles, how many did it find?)")
-    print("\nConfusion Matrix:")
-    print(conf_matrix)
-    print("Format: [[True Negatives (Fake identified as Fake), False Positives (Fake identified as Real)]")
-    print("         [False Negatives (Real identified as Fake), True Positives (Real identified as Real)]]")
-    
-# ==========================================
-# 6. Saving the Model and Vectorizer
-# ==========================================
-    print("\n[INFO] Saving model and vectorizer to disk...")
-    # Save the trained AI model
-    with open(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\models\fake_news_model.pkl', 'wb') as f:
-        pickle.dump(model, f)
-        
-    # Save the TF-IDF vectorizer (Crucial! The backend needs this to understand new words)
-    with open(r'C:\Users\admin\Desktop\Fake-News-Phishing-Detector\models\vectorizer.pkl', 'wb') as f:
-        pickle.dump(vectorizer, f)
-        
-    print("[SUCCESS] Training Complete. Files saved in the 'models' directory.")
+    raw_texts, cleaned_texts, y = load_and_prepare_data()
 
-# Run the training process if the script is executed
-if __name__ == "__main__":
+    print("[INFO] Extracting Stylometric & Forensic Signals...")
+    stylometric_matrix = extract_stylometric_features(raw_texts)
+
+    print("[INFO] Vectorizing N-Grams (Word + Sub-word Characters)...")
+    tfidf_union = FeatureUnion([
+        ('word_tfidf', TfidfVectorizer(ngram_range=(1, 2), max_features=8000)),
+        ('char_tfidf', TfidfVectorizer(analyzer='char', ngram_range=(3, 5), max_features=8000))
+    ])
+    tfidf_matrix = tfidf_union.fit_transform(cleaned_texts)
+
+    # Fuse stylometry and TF-IDF into a single high-dimensional matrix
+    X = hstack([tfidf_matrix, csr_matrix(stylometric_matrix)])
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    print("[INFO] Building 2-Tier Stacking Super-Learner...")
+    base_learners = [
+        ('lr', LogisticRegression(max_iter=1000, class_weight='balanced')),
+        ('svc', CalibratedClassifierCV(LinearSVC(class_weight='balanced', random_state=42))),
+        ('et', ExtraTreesClassifier(n_estimators=100, max_depth=15, random_state=42, n_jobs=-1))
+    ]
+
+    meta_model = StackingClassifier(
+        estimators=base_learners,
+        final_estimator=LogisticRegression(),
+        cv=5,
+        n_jobs=-1
+    )
+
+    print("[INFO] Fitting Meta-Learner (Cross-Validating Base Estimators)...")
+    meta_model.fit(X_train, y_train)
+
+    preds = meta_model.predict(X_test)
+    print(f"\n[INFO] Stacking Model Accuracy: {accuracy_score(y_test, preds):.2%}")
+    print("\nClassification Report:\n", classification_report(y_test, preds))
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(base_dir, '../models/fake_news_model.pkl'), 'wb') as f:
+        pickle.dump(meta_model, f)
+    with open(os.path.join(base_dir, '../models/vectorizer.pkl'), 'wb') as f:
+        pickle.dump(tfidf_union, f)
+    print("[SUCCESS] Production artifacts successfully saved.")
+
+if __name__ == '__main__':
     train_model()

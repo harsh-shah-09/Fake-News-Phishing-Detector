@@ -6,6 +6,8 @@ import sys
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+import numpy as np
+from scipy.sparse import hstack, csr_matrix
 
 # Initialize NLTK safely for the server
 nltk.download('stopwords', quiet=True)
@@ -34,29 +36,53 @@ phishing_vectorizer = load_model('phishing_vectorizer.pkl')
 def clean_text(text):
     """Must match the training cleaner exactly."""
     text = text.lower()
-    text = re.sub('\[.*?\]', '', text)
-    text = re.sub('https?://\S+|www\.\S+', '', text)
-    text = re.sub('<.*?>+', '', text)
-    text = re.sub('[%s]' % re.escape(string.punctuation), '', text)
-    text = re.sub('\n', ' ', text)
-    text = re.sub('\w*\d\w*', '', text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'https?://\S+|www\.\S+', '', text)
+    text = re.sub(r'<.*?>+', '', text)
+    text = re.sub(r'[%s]' % re.escape(string.punctuation), '', text)
+    text = re.sub(r'\n', ' ', text)
+    text = re.sub(r'\w*\d\w*', '', text)
     words = text.split()
     cleaned_words = [lemmatizer.lemmatize(word) for word in words if word not in stop_words]
     return ' '.join(cleaned_words)
 
-def predict_news(text):
+def extract_single_stylometry(text_str):
+    total_chars = max(len(text_str), 1)
+    words = text_str.split()
+    total_words = max(len(words), 1)
+    
+    cap_count = sum(1 for c in text_str if c.isupper())
+    excl_count = text_str.count('!')
+    ques_count = text_str.count('?')
+    punct_count = sum(1 for c in text_str if c in string.punctuation)
+    avg_word_len = sum(len(w) for w in words) / total_words
+    lexical_diversity = len(set(words)) / total_words
+    
+    return np.array([[
+        cap_count / total_chars,
+        excl_count / total_words,
+        ques_count / total_words,
+        punct_count / total_chars,
+        avg_word_len,
+        lexical_diversity
+    ]])
+
+def predict_news(raw_text):
     if not fake_news_model or not vectorizer:
         return {"prediction": "Model Not Trained", "confidence": 0}
     try:
-        # CRITICAL FIX: Clean the text before vectorizing
-        cleaned_input = clean_text(text)
-        vectorized_text = vectorizer.transform([cleaned_input])
+        cleaned = clean_text(raw_text)
+        tfidf_features = vectorizer.transform([cleaned])
+        stylo_features = extract_single_stylometry(raw_text)
         
-        prediction_value = fake_news_model.predict(vectorized_text)[0]
-        probabilities = fake_news_model.predict_proba(vectorized_text)[0]
-        confidence = round(max(probabilities) * 100, 2)
+        # Fuse input data
+        full_features = hstack([tfidf_features, csr_matrix(stylo_features)])
         
-        result = "Fake" if prediction_value == 0 else "Real"
+        pred = fake_news_model.predict(full_features)[0]
+        probs = fake_news_model.predict_proba(full_features)[0]
+        
+        result = "Real" if pred == 1 else "Fake"
+        confidence = round(max(probs) * 100, 2)
         return {"prediction": result, "confidence": confidence}
     except Exception as e:
         return {"prediction": "Processing Error", "confidence": 0}
