@@ -1,81 +1,36 @@
-import pickle
 import os
 import re
 import string
-import sys
+import pickle
+import sqlite3
+import requests
+from urllib.parse import urlparse
+import numpy as np
+from scipy.sparse import hstack, csr_matrix
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-import numpy as np
-from scipy.sparse import hstack, csr_matrix
-from urllib.parse import urlparse
-from tranco import Tranco
 
-
-print("[INFO] Booting Domain Authority Guardrail...")
-try:
-    # This automatically downloads and caches the Top 1 Million list on startup
-    t = Tranco(cache=True, cache_dir='.tranco')
-    tranco_list = t.list()
-    TRANCO_AVAILABLE = True
-    print(f"[SUCCESS] Tranco Top 1 Million loaded. List ID: {tranco_list.list_id}")
-except Exception as e:
-    print("[WARNING] Tranco API failed. Falling back to emergency whitelist.")
-    TRANCO_AVAILABLE = False
-    EMERGENCY_WHITELIST = {'google.com', 'google.co.in', 'youtube.com', 'github.com','microsoft.com', 'apple.com', 'amazon.com', 'linkedin.com','wikipedia.org', 'cloudflare.com', 'mozilla.org','indianexpress.com', 'thehindu.com', 'timesofindia.indiatimes.com','ndtv.com', 'bbc.com', 'bbc.co.uk', 'cnn.com', 'reuters.com','nytimes.com', 'wsj.com', 'aljazeera.com', 'bloomberg.com','twitter.com', 'x.com', 'facebook.com', 'instagram.com', 'whatsapp.com', 'telegram.org', 'reddit.com', 'quora.com', 'medium.com', 'stackexchange.com', 'stackoverflow.com','w3schools.com', 'geeksforgeeks.org', 'coursera.org', 'edx.org', 'khanacademy.org', 'udemy.com', 'pluralsight.com','linkedin.com', 'indeed.com', 'glassdoor.com', 'monster.com', 'naukri.com', 'timesjobs.com', 'shine.com', 'freshersworld.com', 'hackernews.com', 'dev.to', 'hashnode.com',}
-
-
-def is_trusted_domain(url):
-    """
-    Extracts the root domain and dynamically queries the Tranco Top 1M list.
-    """
-    try:
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-        parsed = urlparse(url)
-        netloc = parsed.netloc.lower().split(':')[0]
-        
-        # Create variations to handle subdomains (gemini.google.com -> google.com)
-        parts = netloc.split('.')
-        domains_to_check = [netloc]
-        if len(parts) >= 2:
-            domains_to_check.append(f"{parts[-2]}.{parts[-1]}") # Root (google.com)
-        if len(parts) >= 3:
-            domains_to_check.append(f"{parts[-3]}.{parts[-2]}.{parts[-1]}") # Country code (google.co.in)
-        
-        # 1. Query the Global API List
-        if TRANCO_AVAILABLE:
-            for d in domains_to_check:
-                # If rank() returns anything other than -1, the domain is in the Top 1M
-                if tranco_list.rank(d) != -1:
-                    return True
-            return False
-            
-        # 2. Emergency Fallback
-        else:
-            return any(d in EMERGENCY_WHITELIST for d in domains_to_check)
-            
-    except Exception:
-        return False
-
-# Initialize NLTK safely for the server
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)
-lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODELS_DIR = os.path.join(BASE_DIR, '../models')
+DB_PATH = os.path.join(BASE_DIR, 'domains.db')
+
+SAFE_BROWSING_API_KEY = os.getenv("SAFE_BROWSING_API_KEY", "YOUR_ACTUAL_API_KEY_HERE")
+SAFE_BROWSING_URL = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={SAFE_BROWSING_API_KEY}"
 
 def load_model(filename):
     file_path = os.path.join(MODELS_DIR, filename)
-    try:
-        with open(file_path, 'rb') as file:
-            model = pickle.load(file)
-        print(f"[SUCCESS] Loaded {filename}")
-        return model
-    except FileNotFoundError:
-        return None
+    if os.path.exists(file_path):
+        with open(file_path, 'rb') as f:
+            print(f"[SUCCESS] Loaded {filename}")
+            return pickle.load(f)
+    print(f"[ERROR] Could not find {filename}")
+    return None
 
 fake_news_model = load_model('fake_news_model.pkl')
 vectorizer = load_model('vectorizer.pkl')
@@ -83,8 +38,7 @@ phishing_model = load_model('phishing_model.pkl')
 phishing_vectorizer = load_model('phishing_vectorizer.pkl')
 
 def clean_text(text):
-    """Must match the training cleaner exactly."""
-    text = text.lower()
+    text = str(text).lower()
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     text = re.sub(r'<.*?>+', '', text)
@@ -116,6 +70,57 @@ def extract_single_stylometry(text_str):
         lexical_diversity
     ]])
 
+def is_top_1m_domain(url):
+    """Layer 1: Whitelist - Executes on-disk B-Tree index lookup via SQLite."""
+    try:
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        parsed = urlparse(url)
+        netloc = parsed.netloc.lower().split(':')[0]
+
+        parts = netloc.split('.')
+        candidates = [netloc]
+        if len(parts) >= 2:
+            candidates.append(f"{parts[-2]}.{parts[-1]}")
+        if len(parts) >= 3:
+            candidates.append(f"{parts[-3]}.{parts[-2]}.{parts[-1]}")
+
+        if not os.path.exists(DB_PATH):
+            return False
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        placeholders = ','.join('?' for _ in candidates)
+        cursor.execute(f"SELECT 1 FROM domains WHERE domain IN ({placeholders}) LIMIT 1;", candidates)
+        match = cursor.fetchone()
+        conn.close()
+
+        return match is not None
+    except Exception:
+        return False
+
+def check_google_threat_intel(target_url):
+    """Layer 2: Blacklist - Queries Google Safe Browsing API v4."""
+    payload = {
+        "client": {"clientId": "ai-fraud-detector", "clientVersion": "1.0.0"},
+        "threatInfo": {
+            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
+            "platformTypes": ["ANY_PLATFORM"],
+            "threatEntryTypes": ["URL"],
+            "threatEntries": [{"url": target_url}]
+        }
+    }
+    try:
+        response = requests.post(SAFE_BROWSING_URL, json=payload, timeout=2.5)
+        if response.status_code == 200:
+            data = response.json()
+            if "matches" in data and len(data["matches"]) > 0:
+                return "Phishing"
+            return "Clean"
+    except Exception as e:
+        print(f"[WARNING] Threat API query error: {e}")
+    return None
+
 def predict_news(raw_text):
     if not fake_news_model or not vectorizer:
         return {"prediction": "Model Not Trained", "confidence": 0}
@@ -123,37 +128,40 @@ def predict_news(raw_text):
         cleaned = clean_text(raw_text)
         tfidf_features = vectorizer.transform([cleaned])
         stylo_features = extract_single_stylometry(raw_text)
-        
-        # Fuse input data
         full_features = hstack([tfidf_features, csr_matrix(stylo_features)])
         
         pred = fake_news_model.predict(full_features)[0]
         probs = fake_news_model.predict_proba(full_features)[0]
-        
         result = "Real" if pred == 1 else "Fake"
         confidence = round(max(probs) * 100, 2)
         return {"prediction": result, "confidence": confidence}
-    except Exception as e:
+    except Exception:
         return {"prediction": "Processing Error", "confidence": 0}
 
 def predict_phishing(url):
     if not phishing_model or not phishing_vectorizer:
         return {"prediction": "Model Not Trained", "confidence": 0}
     try:
-        # Step 1: Check Domain Authority Guardrail
-        if is_trusted_domain(url):
-            return {
-                "prediction": "Safe",
-                "confidence": 98.50
-            }
+        # --- LAYER 1: SQLite Domain Whitelist ---
+        if is_top_1m_domain(url):
+            return {"prediction": "Safe", "confidence": 99.80}
 
-        # Step 2: Machine Learning Lexical Evaluation
+        # --- LAYER 2: Google Safe Browsing Blacklist ---
+        api_verdict = check_google_threat_intel(url)
+        if api_verdict == "Phishing":
+            return {"prediction": "Phishing", "confidence": 99.99}
+
+        # --- LAYER 3: Machine Learning Fallback ---
         vectorized_url = phishing_vectorizer.transform([url])
-        prediction_value = phishing_model.predict(vectorized_url)[0]
-        probabilities = phishing_model.predict_proba(vectorized_url)[0]
-        confidence = round(max(probabilities) * 100, 2)
+        pred = phishing_model.predict(vectorized_url)[0]
+        probs = phishing_model.predict_proba(vectorized_url)[0]
+        confidence = round(max(probs) * 100, 2)
 
-        result = "Phishing" if prediction_value == 1 else "Safe"
+        # Give a slight boost if Google confirmed it wasn't on a blacklist, but ML thinks it's Safe
+        if api_verdict == "Clean" and pred == 0:
+            confidence = max(confidence, 96.00)
+
+        result = "Phishing" if pred == 1 else "Safe"
         return {"prediction": result, "confidence": confidence}
-    except Exception as e:
+    except Exception:
         return {"prediction": "Processing Error", "confidence": 0}
