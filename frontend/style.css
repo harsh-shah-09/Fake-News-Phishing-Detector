@@ -62,3 +62,9 @@ body {
 /* Result Colors */
 .text-danger { color: #dc3545 !important; } /* Fake / Phishing */
 .text-success { color: #198754 !important; } /* Real / Safe */
+
+/* --- NEW FIX: Dark Mode Adjustments for Subtext --- */
+.dark-mode .text-muted, 
+.dark-mode #result-subtitle {
+    color: #adb5bd !important; /* Lighter gray for dark backgrounds */
+}

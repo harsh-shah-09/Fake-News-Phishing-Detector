@@ -30,14 +30,24 @@ themeToggle.addEventListener('click', () => {
     // Toggles the 'dark-mode' class on the body element
     body.classList.toggle('dark-mode');
     
+    // Check active mode status
+    const isDark = body.classList.contains('dark-mode');
+    
     // Change the icon from moon to sun based on the mode
     const icon = themeToggle.querySelector('i');
-    if (body.classList.contains('dark-mode')) {
+    if (isDark) {
         icon.classList.remove('fa-moon');
         icon.classList.add('fa-sun');
     } else {
         icon.classList.remove('fa-sun');
         icon.classList.add('fa-moon');
+    }
+
+    // Update existing chart legend text color dynamically
+    if (confidenceChartInstance) {
+        const chartTextColor = isDark ? '#adb5bd' : '#666666';
+        confidenceChartInstance.options.plugins.legend.labels.color = chartTextColor;
+        confidenceChartInstance.update();
     }
 });
 
@@ -104,18 +114,11 @@ async function processPrediction(type, payload) {
     loadingSpinner.classList.remove('d-none');
 
     // Define the endpoint based on the type
-    
-    // Old Code (Local):
-    // const endpoint = type === 'news' ? 'http://127.0.0.1:5000/api/predict/news' : 'http://127.0.0.1:5000/api/predict/url';
-
-    // New Code (Production):
-    // Replace 'https://YOUR-RENDER-URL.onrender.com' with your actual Render link
-const baseURL = 'https://ai-fraud-backend-qxs0.onrender.com';
-const endpoint = type === 'news' ? `${baseURL}/api/predict/news` : `${baseURL}/api/predict/url`;
+    const baseURL = 'https://ai-fraud-backend-qxs0.onrender.com';
+    const endpoint = type === 'news' ? `${baseURL}/api/predict/news` : `${baseURL}/api/predict/url`;
 
     try {
-        // 2. Fetch API: Talk to the Python server (We will build this server in Chapter 4)
-        // await pauses the function until the server replies (Promise resolution).
+        // 2. Fetch API: Talk to the Python server
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -171,6 +174,10 @@ function drawChart(confidenceSafe, confidenceDanger) {
         confidenceChartInstance.destroy();
     }
 
+    // Establish current text color based on active theme
+    const isDark = document.body.classList.contains('dark-mode');
+    const chartTextColor = isDark ? '#adb5bd' : '#666666';
+
     // Create new Chart.js Donut Chart
     confidenceChartInstance = new Chart(ctx, {
         type: 'doughnut',
@@ -187,7 +194,12 @@ function drawChart(confidenceSafe, confidenceDanger) {
             maintainAspectRatio: false,
             cutout: '70%', // Makes the donut hole larger
             plugins: {
-                legend: { position: 'bottom' }
+                legend: { 
+                    position: 'bottom',
+                    labels: {
+                        color: chartTextColor // Apply dynamic text color to legend
+                    }
+                }
             }
         }
     });
