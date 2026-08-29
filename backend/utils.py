@@ -4,15 +4,30 @@ import string
 import pickle
 import sqlite3
 import requests
+import urllib.request
+import zipfile
 from urllib.parse import urlparse
 import numpy as np
 from scipy.sparse import hstack, csr_matrix
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
-import urllib.request
-import zipfile
 
+# 1. Initialize NLTK
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+stop_words = set(stopwords.words('english'))
+lemmatizer = WordNetLemmatizer()
+
+# 2. Define Paths First (Fixes the NameError)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(BASE_DIR, '../models')
+DB_PATH = os.path.join(BASE_DIR, 'domains.db')
+
+SAFE_BROWSING_API_KEY = os.getenv("SAFE_BROWSING_API_KEY", "YOUR_ACTUAL_API_KEY_HERE")
+SAFE_BROWSING_URL = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={SAFE_BROWSING_API_KEY}"
+
+# 3. Define the Database Builder
 def ensure_domain_database():
     """Builds domains.db automatically on server startup if missing."""
     if not os.path.exists(DB_PATH):
@@ -52,21 +67,10 @@ def ensure_domain_database():
         except Exception as e:
             print(f"[WARNING] Failed to build domains.db automatically: {e}")
 
-# Trigger check on import
+# 4. Execute the builder
 ensure_domain_database()
 
-nltk.download('stopwords', quiet=True)
-nltk.download('wordnet', quiet=True)
-stop_words = set(stopwords.words('english'))
-lemmatizer = WordNetLemmatizer()
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODELS_DIR = os.path.join(BASE_DIR, '../models')
-DB_PATH = os.path.join(BASE_DIR, 'domains.db')
-
-SAFE_BROWSING_API_KEY = os.getenv("SAFE_BROWSING_API_KEY", "YOUR_ACTUAL_API_KEY_HERE")
-SAFE_BROWSING_URL = f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={SAFE_BROWSING_API_KEY}"
-
+# 5. Load Models
 def load_model(filename):
     file_path = os.path.join(MODELS_DIR, filename)
     if os.path.exists(file_path):
