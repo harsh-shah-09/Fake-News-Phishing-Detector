@@ -10,6 +10,50 @@ from scipy.sparse import hstack, csr_matrix
 import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+import urllib.request
+import zipfile
+
+def ensure_domain_database():
+    """Builds domains.db automatically on server startup if missing."""
+    if not os.path.exists(DB_PATH):
+        print("[INFO] domains.db not found. Building from Tranco Top 1M list...")
+        try:
+            tranco_url = "https://tranco-list.eu/top-1m.csv.zip"
+            zip_path = os.path.join(BASE_DIR, "temp_top1m.zip")
+            csv_path = os.path.join(BASE_DIR, "top-1m.csv")
+
+            urllib.request.urlretrieve(tranco_url, zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(BASE_DIR)
+
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("CREATE TABLE domains (domain TEXT PRIMARY KEY);")
+
+            batch = []
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split(',')
+                    if len(parts) == 2:
+                        batch.append((parts[1].lower(),))
+                        if len(batch) >= 50000:
+                            cursor.executemany("INSERT OR IGNORE INTO domains VALUES (?);", batch)
+                            batch = []
+
+            if batch:
+                cursor.executemany("INSERT OR IGNORE INTO domains VALUES (?);", batch)
+
+            conn.commit()
+            conn.close()
+
+            if os.path.exists(zip_path): os.remove(zip_path)
+            if os.path.exists(csv_path): os.remove(csv_path)
+            print("[SUCCESS] domains.db built successfully on instance.")
+        except Exception as e:
+            print(f"[WARNING] Failed to build domains.db automatically: {e}")
+
+# Trigger check on import
+ensure_domain_database()
 
 nltk.download('stopwords', quiet=True)
 nltk.download('wordnet', quiet=True)

@@ -12,3 +12,7 @@ datasets/*.csv
 # OS Generated Files
 .DS_Store
 Thumbs.db
+
+# Domain For Machine Learning Training
+backend/domains.db
+*.db
